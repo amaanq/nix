@@ -195,7 +195,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes_defaults)
 
         EXPECT_EQ(options.canBuildLocally(*this->store, got), false);
         EXPECT_EQ(options.willBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), true);
+        EXPECT_EQ(options.substitutesAllowed(this->settings.getWorkerSettings()), true);
         EXPECT_EQ(options.useUidRange(got), false);
     });
 };
@@ -243,7 +243,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes)
 
         EXPECT_EQ(options, expected);
 
-        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), false);
+        EXPECT_EQ(options.substitutesAllowed(this->settings.getWorkerSettings()), false);
         EXPECT_EQ(options.useUidRange(got), true);
     });
 };
@@ -337,7 +337,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes_structuredAttrs_d
 
         EXPECT_EQ(options.canBuildLocally(*this->store, got), false);
         EXPECT_EQ(options.willBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), true);
+        EXPECT_EQ(options.substitutesAllowed(this->settings.getWorkerSettings()), true);
         EXPECT_EQ(options.useUidRange(got), false);
     });
 };
@@ -404,7 +404,7 @@ TYPED_TEST(DerivationAdvancedAttrsBothTest, advancedAttributes_structuredAttrs)
 
         EXPECT_EQ(options.canBuildLocally(*this->store, got), false);
         EXPECT_EQ(options.willBuildLocally(*this->store, got), false);
-        EXPECT_EQ(options.substitutesAllowed(settings.getWorkerSettings()), false);
+        EXPECT_EQ(options.substitutesAllowed(this->settings.getWorkerSettings()), false);
         EXPECT_EQ(options.useUidRange(got), true);
     });
 };

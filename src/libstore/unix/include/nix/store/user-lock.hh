@@ -7,6 +7,7 @@
 
 namespace nix {
 
+class Settings;
 struct LocalSettings;
 
 struct UserLock
@@ -38,7 +39,8 @@ struct UserLock
  * Acquire a user lock for a UID range of size `nrIds`. Note that this
  * may return nullptr if no user is available.
  */
-std::unique_ptr<UserLock> acquireUserLock(const LocalSettings & localSettings, uid_t nrIds, bool useUserNamespace);
+std::unique_ptr<UserLock> acquireUserLock(
+    const Settings & settings, const LocalSettings & localSettings, uid_t nrIds, bool useUserNamespace);
 
 bool useBuildUsers(const LocalSettings &);
 

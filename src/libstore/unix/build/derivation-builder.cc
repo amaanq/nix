@@ -270,7 +270,7 @@ protected:
      */
     virtual std::unique_ptr<UserLock> getBuildUser()
     {
-        return acquireUserLock(localSettings, 1, false);
+        return acquireUserLock(settings, localSettings, 1, false);
     }
 
     /**
@@ -2055,6 +2055,8 @@ std::unique_ptr<DerivationBuilder, DerivationBuilderDeleter> makeDerivationBuild
 {
     bool useSandbox = false;
     const LocalSettings & localSettings = store.config->getLocalSettings();
+
+    auto & settings = store.config->settings;
 
     /* Are we doing a sandboxed build? */
     {

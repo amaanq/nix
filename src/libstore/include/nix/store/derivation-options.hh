@@ -15,6 +15,7 @@
 namespace nix {
 
 class Store;
+class Settings;
 struct StoreDirConfig;
 struct BasicDerivation;
 struct StructuredAttrs;

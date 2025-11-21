@@ -362,11 +362,11 @@ StringSet DerivationOptions<Input>::getRequiredSystemFeatures(const BasicDerivat
 template<typename Input>
 bool DerivationOptions<Input>::canBuildLocally(Store & localStore, const BasicDerivation & drv) const
 {
-    if (drv.platform != settings.thisSystem.get() && !settings.extraPlatforms.get().count(drv.platform)
-        && !drv.isBuiltin())
+    if (drv.platform != localStore.config.settings.thisSystem.get()
+        && !localStore.config.settings.extraPlatforms.get().count(drv.platform) && !drv.isBuiltin())
         return false;
 
-    if (settings.getWorkerSettings().maxBuildJobs.get() == 0 && !drv.isBuiltin())
+    if (localStore.config.settings.getWorkerSettings().maxBuildJobs.get() == 0 && !drv.isBuiltin())
         return false;
 
     for (auto & feature : getRequiredSystemFeatures(drv))

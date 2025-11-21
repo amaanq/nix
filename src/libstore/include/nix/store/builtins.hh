@@ -10,6 +10,8 @@
 
 namespace nix {
 
+class Settings;
+
 struct BuiltinBuilderContext
 {
     const BasicDerivation & drv;

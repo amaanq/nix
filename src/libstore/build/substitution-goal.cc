@@ -37,6 +37,8 @@ Goal::Co PathSubstitutionGoal::init()
         co_return doneSuccess(BuildResult::Success{.status = BuildResult::Success::AlreadyValid});
     }
 
+    auto & settings = worker.store.config.settings;
+
     if (settings.readOnlyMode)
         throw Error(
             "cannot substitute path '%s' - no write access to the Nix store", worker.store.printStorePath(storePath));

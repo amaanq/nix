@@ -214,7 +214,8 @@ struct AutoUserLock : UserLock
     }
 };
 
-std::unique_ptr<UserLock> acquireUserLock(const LocalSettings & localSettings, uid_t nrIds, bool useUserNamespace)
+std::unique_ptr<UserLock> acquireUserLock(
+    const Settings & settings, const LocalSettings & localSettings, uid_t nrIds, bool useUserNamespace)
 {
     if (auto * uidSettings = localSettings.getAutoAllocateUidSettings()) {
         auto userPoolDir = settings.nixStateDir / "userpool2";
