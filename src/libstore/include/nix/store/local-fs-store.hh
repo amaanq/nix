@@ -41,30 +41,30 @@ private:
      * An indirection so that we don't need to refer to global settings
      * in headers.
      */
-    static Path getDefaultStateDir();
+    static std::filesystem::path getDefaultStateDir();
 
     /**
      * An indirection so that we don't need to refer to global settings
      * in headers.
      */
-    static Path getDefaultLogDir();
+    static std::filesystem::path getDefaultLogDir();
 
 public:
 
     Setting<std::filesystem::path> stateDir{
         this,
-        rootDir.get() ? *rootDir.get() + "/nix/var/nix" : getDefaultStateDir(),
+        rootDir.get() ? *rootDir.get() / "nix/var/nix" : getDefaultStateDir(),
         "state",
         "Directory where Nix stores state."};
 
     Setting<std::filesystem::path> logDir{
         this,
-        rootDir.get() ? *rootDir.get() + "/nix/var/log/nix" : getDefaultLogDir(),
+        rootDir.get() ? *rootDir.get() / "nix/var/log/nix" : getDefaultLogDir(),
         "log",
         "directory where Nix stores log files."};
 
     Setting<std::filesystem::path> realStoreDir{
-        this, rootDir.get() ? *rootDir.get() + "/nix/store" : storeDir, "real", "Physical path of the Nix store."};
+        this, rootDir.get() ? *rootDir.get() / "nix/store" : storeDir, "real", "Physical path of the Nix store."};
 };
 
 struct alignas(8) /* Work around ASAN failures on i686-linux. */
@@ -114,7 +114,7 @@ struct alignas(8) /* Work around ASAN failures on i686-linux. */
     Path toRealPath(const Path & storePath)
     {
         assert(isInStore(storePath));
-        return getRealStoreDir() + "/" + std::string(storePath, storeDir.size() + 1);
+        return (getRealStoreDir() / std::string(storePath, storeDir.string().size() + 1)).string();
     }
 
     std::optional<std::string> getBuildLogExact(const StorePath & path) override;

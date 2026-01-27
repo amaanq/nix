@@ -265,7 +265,7 @@ void LocalStore::findRoots(const Path & path, std::filesystem::file_type type, R
         }
 
         else if (type == std::filesystem::file_type::regular) {
-            auto storePath = maybeParseStorePath(storeDir + "/" + std::string(baseNameOf(path)));
+            auto storePath = maybeParseStorePath((storeDir / std::string(baseNameOf(path))).string());
             if (storePath && isValidPath(*storePath))
                 roots[std::move(*storePath)].emplace(path);
         }
@@ -365,7 +365,7 @@ void LocalStore::findRuntimeRoots(Roots & roots, bool censor)
         struct dirent * ent;
         static const auto digitsRegex = boost::regex(R"(^\d+$)");
         static const auto mapRegex = boost::regex(R"(^\s*\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+(/\S+)\s*$)");
-        auto storePathRegex = boost::regex(quoteRegexChars(storeDir) + R"(/[0-9a-z]+[0-9a-zA-Z\+\-\._\?=]*)");
+        auto storePathRegex = boost::regex(quoteRegexChars(storeDir.string()) + R"(/[0-9a-z]+[0-9a-zA-Z\+\-\._\?=]*)");
         while (errno = 0, ent = readdir(procDir.get())) {
             checkInterrupt();
             if (boost::regex_match(ent->d_name, digitsRegex)) {
@@ -842,7 +842,7 @@ void LocalStore::collectGarbage(const GCOptions & options, GCResults & results)
                 if (name == "." || name == ".." || name == linksName)
                     continue;
 
-                if (auto storePath = maybeParseStorePath(storeDir + "/" + name))
+                if (auto storePath = maybeParseStorePath((storeDir / name).string()))
                     deleteReferrersClosure(*storePath);
                 else
                     deleteFromStore(name, false);

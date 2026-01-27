@@ -873,7 +873,7 @@ std::optional<StorePath> LocalStore::queryPathFromHashPart(const std::string & h
     if (hashPart.size() != StorePath::HashLen)
         throw Error("invalid hash part");
 
-    Path prefix = storeDir + "/" + hashPart;
+    Path prefix = (storeDir / hashPart).string();
 
     return retrySQLite<std::optional<StorePath>>([&]() -> std::optional<StorePath> {
         auto state(_state->lock());

@@ -81,7 +81,7 @@ nix_store_get_storedir(nix_c_context * context, Store * store, nix_get_string_ca
     if (context)
         context->last_err_code = NIX_OK;
     try {
-        return call_nix_get_string_callback(store->ptr->storeDir, callback, user_data);
+        return call_nix_get_string_callback(store->ptr->storeDir.string(), callback, user_data);
     }
     NIXC_CATCH_ERRS
 }

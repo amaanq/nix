@@ -556,7 +556,7 @@ static void main_nix_build(int argc, char ** argv)
         }
 
         env["NIX_BUILD_TOP"] = env["TMPDIR"] = env["TEMPDIR"] = env["TMP"] = env["TEMP"] = tmpDir.path().string();
-        env["NIX_STORE"] = store->storeDir;
+        env["NIX_STORE"] = store->storeDir.string();
         env["NIX_BUILD_CORES"] = fmt("%d", settings.buildCores ? settings.buildCores : settings.getDefaultCores());
 
         DerivationOptions<StorePath> drvOptions;
