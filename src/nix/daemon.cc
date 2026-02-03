@@ -25,17 +25,25 @@
 #include <unistd.h>
 #include <signal.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/select.h>
 #include <errno.h>
-#include <pwd.h>
-#include <grp.h>
 #include <fcntl.h>
-#include <netdb.h>
-#include <poll.h>
+
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  include <afunix.h>
+#  include <thread>
+#else
+#  include <sys/wait.h>
+#  include <sys/socket.h>
+#  include <sys/un.h>
+#  include <sys/select.h>
+#  include <pwd.h>
+#  include <grp.h>
+#  include <netdb.h>
+#  include <poll.h>
+#endif
 
 #ifdef __linux__
 #  include "nix/util/cgroup.hh"
@@ -106,27 +114,30 @@ AuthorizationSettings authorizationSettings;
 
 static GlobalConfig::Register rSettings(&authorizationSettings);
 
-#ifndef __linux__
-#  define SPLICE_F_MOVE 0
-
-static ssize_t splice(int fd_in, void * off_in, int fd_out, void * off_out, size_t len, unsigned int flags)
+/**
+ * Copy data from one file descriptor to another.
+ *
+ * @return bytes copied, 0 on EOF
+ * @throws SysError on read/write failure
+ */
+static size_t copyData(Descriptor from, Descriptor to)
 {
-    // We ignore most parameters, we just have them for conformance with the linux syscall
-    std::vector<char> buf(8192);
-    auto read_count = read(fd_in, buf.data(), buf.size());
-    if (read_count == -1)
-        return read_count;
-    auto write_count = decltype(read_count)(0);
-    while (write_count < read_count) {
-        auto res = write(fd_out, buf.data() + write_count, read_count - write_count);
-        if (res == -1)
-            return res;
-        write_count += res;
-    }
-    return read_count;
-}
+#ifdef __linux__
+    auto res = splice(from, nullptr, to, nullptr, SSIZE_MAX, SPLICE_F_MOVE);
+    if (res == -1)
+        throw SysError("copying data between file descriptors");
+    return res;
+#else
+    std::array<std::byte, 8192> buf;
+    auto res = nix::read(from, buf);
+    if (res == 0)
+        return 0;
+    writeFull(to, std::string_view(reinterpret_cast<char *>(buf.data()), res), false);
+    return res;
 #endif
+}
 
+#ifndef _WIN32
 static void sigChldHandler(int sigNo)
 {
     // Ensure we don't modify errno of whatever we've interrupted
@@ -213,13 +224,13 @@ static PeerInfo getPeerInfo(Descriptor remote)
 {
     PeerInfo peer;
 
-#if defined(SO_PEERCRED)
+#  if defined(SO_PEERCRED)
 
-#  if defined(__OpenBSD__)
+#    if defined(__OpenBSD__)
     struct sockpeercred cred;
-#  else
+#    else
     ucred cred;
-#  endif
+#    endif
     socklen_t credLen = sizeof(cred);
     if (getsockopt(remote, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) == 0) {
         peer.pid = cred.pid;
@@ -227,33 +238,20 @@ static PeerInfo getPeerInfo(Descriptor remote)
         peer.gid = cred.gid;
     }
 
-#elif defined(LOCAL_PEERCRED)
+#  elif defined(LOCAL_PEERCRED)
 
-#  if !defined(SOL_LOCAL)
-#    define SOL_LOCAL 0
-#  endif
+#    if !defined(SOL_LOCAL)
+#      define SOL_LOCAL 0
+#    endif
 
     xucred cred;
     socklen_t credLen = sizeof(cred);
     if (getsockopt(remote, SOL_LOCAL, LOCAL_PEERCRED, &cred, &credLen) == 0)
         peer.uid = cred.cr_uid;
 
-#endif
+#  endif
 
     return peer;
-}
-
-#define SD_LISTEN_FDS_START 3
-
-/**
- * Open a store without a path info cache.
- */
-static ref<Store> openUncachedStore()
-{
-    Store::Config::Params params; // FIXME: get params from somewhere
-    // Disable caching since the client already does that.
-    params["path-info-cache-size"] = "0";
-    return openStore(settings.storeUri, params);
 }
 
 /**
@@ -293,6 +291,19 @@ static std::pair<TrustedFlag, std::optional<std::string>> authPeer(const PeerInf
     return {trusted, std::move(user)};
 }
 
+#endif
+
+/**
+ * Open a store without a path info cache.
+ */
+static ref<Store> openUncachedStore()
+{
+    Store::Config::Params params; // FIXME: get params from somewhere
+    // Disable caching since the client already does that.
+    params["path-info-cache-size"] = "0";
+    return openStore(settings.storeUri, params);
+}
+
 /**
  * Run a server. The loop opens a socket and accepts new connections from that
  * socket.
@@ -308,6 +319,9 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
 
     std::vector<AutoCloseFD> listeningSockets;
 
+#ifndef _WIN32
+    static constexpr int SD_LISTEN_FDS_START = 3;
+
     //  Handle socket-based activation by systemd.
     auto listenFds = getEnv("LISTEN_FDS");
     if (listenFds) {
@@ -322,18 +336,25 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
         }
     }
 
-    //  Otherwise, create and bind to a Unix domain socket.
     else {
+#else
+    {
+#endif
+        //  Otherwise, create and bind to a Unix domain socket.
         createDirs(dirOf(settings.nixDaemonSocketFile));
         listeningSockets.push_back(createUnixDomainSocket(settings.nixDaemonSocketFile, 0666));
     }
 
+#ifndef _WIN32
     std::vector<struct pollfd> fds;
     for (auto & i : listeningSockets)
         fds.push_back({.fd = i.get(), .events = POLLIN});
+#endif
 
+#ifndef _WIN32
     //  Get rid of children automatically; don't let them become zombies.
     setSigChldAction(true);
+#endif
 
 #ifdef __linux__
     if (settings.getLocalSettings().useCgroups) {
@@ -362,6 +383,7 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
         try {
             checkInterrupt();
 
+#ifndef _WIN32
             auto count = poll(fds.data(), fds.size(), -1);
             if (count == -1) {
                 if (errno == EINTR)
@@ -369,15 +391,21 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
                 throw SysError("polling for incomming connections");
             }
 
-            for (auto & fd : fds) {
-                if (!fd.revents)
+            for (auto & pollfd : fds) {
+                if (!pollfd.revents)
                     continue;
+                Descriptor fd = pollfd.fd;
+#else
+            assert(listeningSockets.size() == 1);
+            {
+                Socket fd = toSocket(listeningSockets[0].get());
+#endif
 
                 // Accept a connection.
                 struct sockaddr_un remoteAddr;
                 socklen_t remoteAddrLen = sizeof(remoteAddr);
 
-                AutoCloseFD remote = accept(fd.fd, (struct sockaddr *) &remoteAddr, &remoteAddrLen);
+                AutoCloseFD remote = fromSocket(accept(fd, (struct sockaddr *) &remoteAddr, &remoteAddrLen));
                 checkInterrupt();
                 if (!remote) {
                     if (errno == EINTR)
@@ -385,26 +413,39 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
                     throw SysError("accepting connection");
                 }
 
+#ifndef _WIN32
                 unix::closeOnExec(remote.get());
+#endif
 
+#ifndef _WIN32
                 PeerInfo peer;
+#endif
                 TrustedFlag trusted;
                 std::optional<std::string> userName;
 
                 if (forceTrustClientOpt)
                     trusted = *forceTrustClientOpt;
                 else {
+#ifndef _WIN32
                     peer = getPeerInfo(remote.get());
                     auto [_trusted, _userName] = authPeer(peer);
                     trusted = _trusted;
                     userName = _userName;
+#else
+                    warn("no peer cred on windows yet, defaulting to untrusted");
+                    trusted = NotTrusted;
+#endif
                 };
 
                 printInfo(
                     (std::string) "accepted connection from pid %1%, user %2%" + (trusted ? " (trusted)" : ""),
-                    peer.pid ? std::to_string(*peer.pid) : "<unknown>",
+#ifndef _WIN32
+                    peer.pid ? std::to_string(*peer.pid) :
+#endif
+                             "<unknown>",
                     userName.value_or("<unknown>"));
 
+#ifndef _WIN32
                 // Fork a child to handle the connection.
                 ProcessOptions options;
                 options.errorPrefix = "unexpected Nix daemon error: ";
@@ -427,14 +468,26 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
                             auto processName = std::to_string(*peer.pid);
                             strncpy(savedArgv[1], processName.c_str(), strlen(savedArgv[1]));
                         }
-
+#else
+                // Spawn a thread to handle the connection.
+                std::thread([remote = std::move(remote), trusted]() {
+                    try {
+#endif
                         // Handle the connection.
                         processConnection(
                             openUncachedStore(), FdSource(remote.get()), FdSink(remote.get()), trusted, NotRecursive);
-
+#ifndef _WIN32
                         exit(0);
                     },
                     options);
+#else
+                    } catch (Error & e) {
+                        auto ei = e.info();
+                        ei.msg = HintFmt("unexpected Nix daemon error: %1%", ei.msg.str());
+                        logError(ei);
+                    }
+                }).detach();
+#endif
             }
 
         } catch (Interrupted & e) {
@@ -459,8 +512,8 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
 static void forwardStdioConnection(RemoteStore & store)
 {
     auto conn = store.openConnectionWrapper();
-    int from = conn->from.fd;
-    int to = conn->to.fd;
+    Descriptor from = conn->from.fd;
+    Descriptor to = conn->to.fd;
 
     Socket fromSock = toSocket(from), stdinSock = toSocket(getStandardInput());
     auto nfds = std::max(fromSock, stdinSock) + 1;
@@ -472,18 +525,22 @@ static void forwardStdioConnection(RemoteStore & store)
         if (select(nfds, &fds, nullptr, nullptr, nullptr) == -1)
             throw SysError("waiting for data from client or server");
         if (FD_ISSET(fromSock, &fds)) {
-            auto res = splice(from, nullptr, STDOUT_FILENO, nullptr, SSIZE_MAX, SPLICE_F_MOVE);
-            if (res == -1)
-                throw SysError("splicing data from daemon socket to stdout");
-            else if (res == 0)
-                throw EndOfFile("unexpected EOF from daemon socket");
+            try {
+                if (copyData(from, getStandardOutput()) == 0)
+                    throw EndOfFile("unexpected EOF from daemon socket");
+            } catch (SysError & e) {
+                e.addTrace({}, "splicing data from daemon socket to stdout");
+                throw;
+            }
         }
         if (FD_ISSET(stdinSock, &fds)) {
-            auto res = splice(STDIN_FILENO, nullptr, to, nullptr, SSIZE_MAX, SPLICE_F_MOVE);
-            if (res == -1)
-                throw SysError("splicing data from stdin to daemon socket");
-            else if (res == 0)
-                return;
+            try {
+                if (copyData(getStandardInput(), to) == 0)
+                    return;
+            } catch (SysError & e) {
+                e.addTrace({}, "splicing data from stdin to daemon socket");
+                throw;
+            }
         }
     }
 }
@@ -499,7 +556,7 @@ static void forwardStdioConnection(RemoteStore & store)
  */
 static void processStdioConnection(ref<Store> store, TrustedFlag trustClient)
 {
-    processConnection(store, FdSource(STDIN_FILENO), FdSink(STDOUT_FILENO), trustClient, NotRecursive);
+    processConnection(store, FdSource(getStandardInput()), FdSink(getStandardOutput()), trustClient, NotRecursive);
 }
 
 /**
