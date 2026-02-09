@@ -15,6 +15,7 @@
 #include "nix/store/derivations.hh"
 #include "nix/util/finally.hh"
 #include "nix/cmd/legacy.hh"
+#include "nix/cmd/unix-socket-server.hh"
 #include "nix/store/daemon.hh"
 #include "man-pages.hh"
 
@@ -41,8 +42,6 @@
 #  include <sys/select.h>
 #  include <pwd.h>
 #  include <grp.h>
-#  include <netdb.h>
-#  include <poll.h>
 #endif
 
 #ifdef __linux__
@@ -210,50 +209,6 @@ matchUser(const std::optional<std::string> & user, const std::optional<std::stri
     return false;
 }
 
-struct PeerInfo
-{
-    std::optional<pid_t> pid;
-    std::optional<uid_t> uid;
-    std::optional<gid_t> gid;
-};
-
-/**
- * Get the identity of the caller, if possible.
- */
-static PeerInfo getPeerInfo(Descriptor remote)
-{
-    PeerInfo peer;
-
-#  if defined(SO_PEERCRED)
-
-#    if defined(__OpenBSD__)
-    struct sockpeercred cred;
-#    else
-    ucred cred;
-#    endif
-    socklen_t credLen = sizeof(cred);
-    if (getsockopt(remote, SOL_SOCKET, SO_PEERCRED, &cred, &credLen) == 0) {
-        peer.pid = cred.pid;
-        peer.uid = cred.uid;
-        peer.gid = cred.gid;
-    }
-
-#  elif defined(LOCAL_PEERCRED)
-
-#    if !defined(SOL_LOCAL)
-#      define SOL_LOCAL 0
-#    endif
-
-    xucred cred;
-    socklen_t credLen = sizeof(cred);
-    if (getsockopt(remote, SOL_LOCAL, LOCAL_PEERCRED, &cred, &credLen) == 0)
-        peer.uid = cred.cr_uid;
-
-#  endif
-
-    return peer;
-}
-
 /**
  * Authenticate a potential client
  *
@@ -265,7 +220,7 @@ static PeerInfo getPeerInfo(Descriptor remote)
  *
  * If the potential client is not allowed to talk to us, we throw an `Error`.
  */
-static std::pair<TrustedFlag, std::optional<std::string>> authPeer(const PeerInfo & peer)
+static std::pair<TrustedFlag, std::optional<std::string>> authPeer(const unix::PeerInfo & peer)
 {
     TrustedFlag trusted = NotTrusted;
 
@@ -317,40 +272,6 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
     if (chdir("/") == -1)
         throw SysError("cannot change current directory");
 
-    std::vector<AutoCloseFD> listeningSockets;
-
-#ifndef _WIN32
-    static constexpr int SD_LISTEN_FDS_START = 3;
-
-    //  Handle socket-based activation by systemd.
-    auto listenFds = getEnv("LISTEN_FDS");
-    if (listenFds) {
-        if (getEnv("LISTEN_PID") != std::to_string(getpid()))
-            throw Error("unexpected systemd environment variables");
-        auto count = string2Int<unsigned int>(*listenFds);
-        assert(count);
-        for (auto i = 0; i < count; ++i) {
-            AutoCloseFD fdSocket(SD_LISTEN_FDS_START + i);
-            unix::closeOnExec(fdSocket.get());
-            listeningSockets.push_back(std::move(fdSocket));
-        }
-    }
-
-    else {
-#else
-    {
-#endif
-        //  Otherwise, create and bind to a Unix domain socket.
-        createDirs(dirOf(settings.nixDaemonSocketFile));
-        listeningSockets.push_back(createUnixDomainSocket(settings.nixDaemonSocketFile, 0666));
-    }
-
-#ifndef _WIN32
-    std::vector<struct pollfd> fds;
-    for (auto & i : listeningSockets)
-        fds.push_back({.fd = i.get(), .events = POLLIN});
-#endif
-
 #ifndef _WIN32
     //  Get rid of children automatically; don't let them become zombies.
     setSigChldAction(true);
@@ -377,128 +298,80 @@ static void daemonLoop(std::optional<TrustedFlag> forceTrustClientOpt)
     }
 #endif
 
-    //  Loop accepting connections.
-    while (1) {
-
-        try {
-            checkInterrupt();
+    serveUnixSocket({.socketPath = settings.nixDaemonSocketFile, .socketMode = 0666}, [&](AutoCloseFD remote) {
 
 #ifndef _WIN32
-            auto count = poll(fds.data(), fds.size(), -1);
-            if (count == -1) {
-                if (errno == EINTR)
-                    continue;
-                throw SysError("polling for incomming connections");
-            }
-
-            for (auto & pollfd : fds) {
-                if (!pollfd.revents)
-                    continue;
-                Descriptor fd = pollfd.fd;
-#else
-            assert(listeningSockets.size() == 1);
-            {
-                Socket fd = toSocket(listeningSockets[0].get());
+        unix::PeerInfo peer;
 #endif
+        TrustedFlag trusted;
+        std::optional<std::string> userName;
 
-                // Accept a connection.
-                struct sockaddr_un remoteAddr;
-                socklen_t remoteAddrLen = sizeof(remoteAddr);
+        if (forceTrustClientOpt)
+            trusted = *forceTrustClientOpt;
+        else {
+#ifndef _WIN32
+            peer = unix::getPeerInfo(remote.get());
+            auto [_trusted, _userName] = authPeer(peer);
+            trusted = _trusted;
+            userName = _userName;
+#else
+                warn("no peer cred on windows yet, defaulting to untrusted");
+                trusted = NotTrusted;
+#endif
+        };
 
-                AutoCloseFD remote = fromSocket(accept(fd, (struct sockaddr *) &remoteAddr, &remoteAddrLen));
-                checkInterrupt();
-                if (!remote) {
-                    if (errno == EINTR)
-                        continue;
-                    throw SysError("accepting connection");
+        printInfo(
+            (std::string) "accepted connection from pid %1%, user %2%" + (trusted ? " (trusted)" : ""),
+#ifndef _WIN32
+            peer.pid ? std::to_string(*peer.pid) :
+#endif
+                     "<unknown>",
+            userName.value_or("<unknown>"));
+
+#ifndef _WIN32
+        // Fork a child to handle the connection.
+        ProcessOptions options;
+        options.errorPrefix = "unexpected Nix daemon error: ";
+        options.dieWithParent = false;
+        options.runExitHandlers = true;
+        options.allowVfork = false;
+        startProcess(
+            [&]() {
+                // Background the daemon.
+                if (setsid() == -1)
+                    throw SysError("creating a new session");
+
+                // Restore normal handling of SIGCHLD.
+                setSigChldAction(false);
+
+                // For debugging, stuff the pid into argv[1].
+                if (peer.pid && savedArgv[1]) {
+                    auto processName = std::to_string(*peer.pid);
+                    strncpy(savedArgv[1], processName.c_str(), strlen(savedArgv[1]));
                 }
 
-#ifndef _WIN32
-                unix::closeOnExec(remote.get());
-#endif
+                // Handle the connection.
+                processConnection(
+                    openUncachedStore(), FdSource(remote.get()), FdSink(remote.get()), trusted, NotRecursive);
 
-#ifndef _WIN32
-                PeerInfo peer;
-#endif
-                TrustedFlag trusted;
-                std::optional<std::string> userName;
-
-                if (forceTrustClientOpt)
-                    trusted = *forceTrustClientOpt;
-                else {
-#ifndef _WIN32
-                    peer = getPeerInfo(remote.get());
-                    auto [_trusted, _userName] = authPeer(peer);
-                    trusted = _trusted;
-                    userName = _userName;
+                exit(0);
+            },
+            options);
 #else
-                    warn("no peer cred on windows yet, defaulting to untrusted");
-                    trusted = NotTrusted;
+            // Spawn a thread to handle the connection.
+            std::thread([remote = std::move(remote), trusted]() {
+                try {
+                    // Handle the connection.
+                    processConnection(
+                        openUncachedStore(), FdSource(remote.get()), FdSink(remote.get()), trusted, NotRecursive);
+                } catch (Error & e) {
+                    auto ei = e.info();
+                    ei.msg = HintFmt("unexpected Nix daemon error: %1%", ei.msg.str());
+                    logError(ei);
+                }
+            }).detach();
 #endif
-                };
-
-                printInfo(
-                    (std::string) "accepted connection from pid %1%, user %2%" + (trusted ? " (trusted)" : ""),
-#ifndef _WIN32
-                    peer.pid ? std::to_string(*peer.pid) :
-#endif
-                             "<unknown>",
-                    userName.value_or("<unknown>"));
-
-#ifndef _WIN32
-                // Fork a child to handle the connection.
-                ProcessOptions options;
-                options.errorPrefix = "unexpected Nix daemon error: ";
-                options.dieWithParent = false;
-                options.runExitHandlers = true;
-                options.allowVfork = false;
-                startProcess(
-                    [&]() {
-                        listeningSockets.clear();
-
-                        // Background the daemon.
-                        if (setsid() == -1)
-                            throw SysError("creating a new session");
-
-                        // Restore normal handling of SIGCHLD.
-                        setSigChldAction(false);
-
-                        // For debugging, stuff the pid into argv[1].
-                        if (peer.pid && savedArgv[1]) {
-                            auto processName = std::to_string(*peer.pid);
-                            strncpy(savedArgv[1], processName.c_str(), strlen(savedArgv[1]));
-                        }
-#else
-                // Spawn a thread to handle the connection.
-                std::thread([remote = std::move(remote), trusted]() {
-                    try {
-#endif
-                        // Handle the connection.
-                        processConnection(
-                            openUncachedStore(), FdSource(remote.get()), FdSink(remote.get()), trusted, NotRecursive);
-#ifndef _WIN32
-                        exit(0);
-                    },
-                    options);
-#else
-                    } catch (Error & e) {
-                        auto ei = e.info();
-                        ei.msg = HintFmt("unexpected Nix daemon error: %1%", ei.msg.str());
-                        logError(ei);
-                    }
-                }).detach();
-#endif
-            }
-
-        } catch (Interrupted & e) {
-            return;
-        } catch (Error & error) {
-            auto ei = error.info();
-            // FIXME: add to trace?
-            ei.msg = HintFmt("while processing connection: %1%", ei.msg.str());
-            logError(ei);
-        }
-    }
+    });
 }
 
 /**
