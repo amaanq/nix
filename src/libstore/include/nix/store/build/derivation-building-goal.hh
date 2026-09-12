@@ -70,12 +70,11 @@ private:
     /**
      * The states.
      */
+    using Result = decltype(BuildResult::inner);
+
     Co<void> tryToBuild();
-    Co<void> buildWithHook(
-        StorePathSet inputPaths,
-        std::map<std::string, InitialOutput> initialOutputs,
-        DerivationOptions<StorePath> drvOptions,
-        PathLocks outputLocks);
+    Co<Result> buildWithHook(
+        const StorePathSet & inputPaths, std::map<std::string, InitialOutput> & initialOutputs, PathLocks outputLocks);
     Co<void> buildLocally(
         LocalBuildCapability localBuildCap,
         const StorePathSet & inputPaths,
@@ -110,6 +109,11 @@ private:
     Done doneSuccess(BuildResult::Success::Status status, SingleDrvOutputs builtOutputs);
 
     Done doneFailure(BuildError ex);
+
+    /**
+     * Finish the goal with the result of a build attempt.
+     */
+    Done done(Result result);
 
     BuildError fixupBuilderFailureErrorMessage(BuilderFailureError msg, BuildLog & buildLog);
 
