@@ -77,7 +77,8 @@ private:
 
     using LocalBuildOutcome = std::variant<Result, NeedsSlot>;
 
-    Co<void> tryToBuild();
+    Co<void> init();
+    Co<Result> tryToBuild();
     Co<Result> buildWithHook(
         const StorePathSet & inputPaths, std::map<std::string, InitialOutput> & initialOutputs, PathLocks outputLocks);
     Co<LocalBuildOutcome> buildLocally(
@@ -112,11 +113,6 @@ private:
     Done doneSuccess(BuildResult::Success::Status status, SingleDrvOutputs builtOutputs);
 
     Done doneFailure(BuildError ex);
-
-    /**
-     * Finish the goal with the result of a build attempt.
-     */
-    Done done(Result result);
 
     BuildError fixupBuilderFailureErrorMessage(BuilderFailureError msg, BuildLog & buildLog);
 
